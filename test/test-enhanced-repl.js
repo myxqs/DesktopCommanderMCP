@@ -1,25 +1,36 @@
 import assert from 'assert';
-import { execSync } from 'child_process';
+import { spawnSync } from 'child_process';
 import { startProcess, readProcessOutput, forceTerminate, interactWithProcess } from '../dist/tools/improved-process-tools.js';
 
 /**
- * Determines the correct python command to use
- * @returns {string} 'python3' or 'python'
+ * Determines a working Python invocation without relying on shell built-ins.
+ * @returns {string} command prefix suitable for the selected platform shell
  */
 function getPythonCommand() {
-  try {
-    // Prefer python3 if available
-    execSync('command -v python3', { stdio: 'ignore' });
-    return 'python3';
-  } catch (e) {
-    // Fallback to python
-    try {
-      execSync('command -v python', { stdio: 'ignore' });
-      return 'python';
-    } catch (error) {
-      throw new Error('Neither python3 nor python command is available in the PATH');
-    }
+  const candidates = process.platform === 'win32'
+    ? [
+        { executable: 'python', args: ['--version'], command: 'python' },
+        { executable: 'py', args: ['-3', '--version'], command: 'py -3' },
+        { executable: 'python3', args: ['--version'], command: 'python3' }
+      ]
+    : [
+        { executable: 'python3', args: ['--version'], command: 'python3' },
+        { executable: 'python', args: ['--version'], command: 'python' }
+      ];
+
+  for (const candidate of candidates) {
+    const probe = spawnSync(candidate.executable, candidate.args, {
+      stdio: 'ignore',
+      windowsHide: true
+    });
+    if (!probe.error && probe.status === 0) return candidate.command;
   }
+
+  throw new Error('No usable Python 3 interpreter is available in the PATH');
+}
+
+function getTestShell() {
+  return process.platform === 'win32' ? (process.env.ComSpec || 'cmd.exe') : '/bin/bash';
 }
 
 
@@ -37,7 +48,7 @@ async function testEnhancedREPL() {
   const result = await startProcess({
     command: `${pythonCommand} -i`,
     timeout_ms: 10000,
-    shell: '/bin/bash'
+    shell: getTestShell()
   });
   
   console.log('Result from start_process:', result);

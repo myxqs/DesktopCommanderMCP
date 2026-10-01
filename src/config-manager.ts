@@ -209,11 +209,34 @@ class ConfigManager {
     throw lastError;
   }
 
+  private async replaceConfigFile(tempPath: string): Promise<void> {
+    const retryDeadline = process.platform === 'win32' ? Date.now() + 2_000 : 0;
+    let retryDelayMs = 2;
+
+    while (true) {
+      try {
+        await fs.rename(tempPath, this.configPath);
+        return;
+      } catch (error: any) {
+        const transientWindowsSharingViolation =
+          process.platform === 'win32' &&
+          (error?.code === 'EPERM' || error?.code === 'EBUSY') &&
+          Date.now() < retryDeadline;
+        if (!transientWindowsSharingViolation) throw error;
+
+        // Windows can briefly deny replacement while another process has the
+        // destination open. Retry only that atomic rename, with a bounded deadline.
+        await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+        retryDelayMs = Math.min(retryDelayMs * 2, 25);
+      }
+    }
+  }
+
   private async writeConfigAtomically(config: ServerConfig): Promise<void> {
     const tempPath = `${this.configPath}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
     try {
       await fs.writeFile(tempPath, JSON.stringify(config, null, 2), 'utf8');
-      await fs.rename(tempPath, this.configPath);
+      await this.replaceConfigFile(tempPath);
     } finally {
       await fs.unlink(tempPath).catch(() => {});
     }
