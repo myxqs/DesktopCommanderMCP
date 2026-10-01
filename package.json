@@ -31,6 +31,10 @@
     "device:install": "cd src/remote-device && npm install",
     "device:start": "tsx src/remote-device/device.ts",
     "device:start:dev": "nodemon --watch src/remote-device --exec tsx src/remote-device/device.ts",
+    "native-rdc:relay": "npm run build && node dist/native-remote/relay-main.js",
+    "native-rdc:device": "npm run build && node dist/native-remote/device-main.js",
+    "native-rdc:test": "npm run build && node test/test-native-rdc.js",
+    "native-rdc:smoke": "npm run build && node dist/native-remote/smoke.js",
     "sync-version": "node scripts/sync-version.js",
     "bump": "node scripts/sync-version.js --bump",
     "bump:minor": "node scripts/sync-version.js --bump --minor",
@@ -63,7 +67,8 @@
     "logs:clear": "npm run build && node scripts/clear-fuzzy-logs.js",
     "logs:export": "npm run build && node scripts/export-fuzzy-logs.js",
     "count-tokens": "npm run build && node scripts/count-tokens.js",
-    "count-tokens:json": "npm run build && node scripts/count-tokens.js --json"
+    "count-tokens:json": "npm run build && node scripts/count-tokens.js --json",
+    "native-rdc:token": "npm run build && node dist/native-remote/token-main.js"
   },
   "publishConfig": {
     "access": "public"
