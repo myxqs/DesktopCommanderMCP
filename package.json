@@ -68,7 +68,10 @@
     "logs:export": "npm run build && node scripts/export-fuzzy-logs.js",
     "count-tokens": "npm run build && node scripts/count-tokens.js",
     "count-tokens:json": "npm run build && node scripts/count-tokens.js --json",
-    "native-rdc:token": "npm run build && node dist/native-remote/token-main.js"
+    "native-rdc:token": "npm run build && node dist/native-remote/token-main.js",
+    "native-rdc:m1:device": "npm run build && node dist/native-remote/cloudflare-device-main.js",
+    "native-rdc:m1:client": "npm run build && node dist/native-remote/cloudflare-client-main.js",
+    "native-rdc:m1:test": "npm run build && node test/test-native-rdc-m1.js"
   },
   "publishConfig": {
     "access": "public"
@@ -125,6 +128,7 @@
     "tiptap-markdown": "^0.9.0",
     "unified": "^11.0.5",
     "unpdf": "^1.4.0",
+    "ws": "8.18.3",
     "zod": "^3.24.1",
     "zod-to-json-schema": "^3.23.5"
   },
@@ -136,6 +140,7 @@
     "@modelcontextprotocol/ext-apps": "^1.0.1",
     "@types/node": "^20.17.24",
     "@types/proper-lockfile": "^4.1.4",
+    "@types/ws": "8.18.1",
     "commander": "^13.1.0",
     "esbuild": "^0.27.2",
     "js-tiktoken": "^1.0.21",
