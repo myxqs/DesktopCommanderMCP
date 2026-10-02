@@ -1,8 +1,15 @@
 {
   "name": "native-rdc-gateway",
-  "main": "src/index.js",
+  "main": "src/entry.js",
   "compatibility_date": "2026-10-02",
+  "compatibility_flags": ["global_fetch_strictly_public"],
   "workers_dev": true,
+  "kv_namespaces": [
+    {
+      "binding": "OAUTH_KV",
+      "id": "547598b6674249abb9502e0c131f6df8"
+    }
+  ],
   "durable_objects": {
     "bindings": [
       {

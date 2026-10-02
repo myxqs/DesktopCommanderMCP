@@ -71,7 +71,9 @@
     "native-rdc:token": "npm run build && node dist/native-remote/token-main.js",
     "native-rdc:m1:device": "npm run build && node dist/native-remote/cloudflare-device-main.js",
     "native-rdc:m1:client": "npm run build && node dist/native-remote/cloudflare-client-main.js",
-    "native-rdc:m1:test": "npm run build && node test/test-native-rdc-m1.js"
+    "native-rdc:m1:test": "npm run build && node test/test-native-rdc-m1.js",
+    "native-rdc:m2:test": "node test/test-native-rdc-m2.js",
+    "native-rdc:m2:remote-proof": "node scripts/native-rdc-m2-remote-proof.js"
   },
   "publishConfig": {
     "access": "public"
@@ -96,6 +98,7 @@
     "file-operations"
   ],
   "dependencies": {
+    "@cloudflare/workers-oauth-provider": "^1.2.1",
     "@modelcontextprotocol/sdk": "^1.9.0",
     "@opendocsg/pdf2md": "^0.2.2",
     "@supabase/supabase-js": "^2.89.0",
