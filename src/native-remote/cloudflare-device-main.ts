@@ -11,12 +11,18 @@ async function main(): Promise<void> {
   const gatewayUrl = required('NATIVE_RDC_M1_GATEWAY_URL').replace(/\/$/, '');
   const deviceToken = required('NATIVE_RDC_M1_DEVICE_TOKEN');
   const deviceId = process.env.NATIVE_RDC_M1_DEVICE_ID?.trim() || 'native-rdc-windows-1';
+  const readRoots = (process.env.NATIVE_RDC_READ_ROOTS || '')
+    .split(';')
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .slice(0, 16);
 
   const client = new CloudflareDeviceClient({
     gatewayUrl,
     deviceToken,
     deviceId,
     deviceName: os.hostname(),
+    readRoots,
   });
   await client.start();
   console.log(`Native RDC M1 device connected outbound as ${deviceId}`);

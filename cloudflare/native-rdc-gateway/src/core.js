@@ -3,6 +3,14 @@ export const MAX_DEVICE_MESSAGE_BYTES = 1024 * 1024;
 export const MAX_CALL_TIMEOUT_MS = 30_000;
 export const MAX_CLOCK_SKEW_MS = 5_000;
 export const ALLOWED_TOOL = 'get_config';
+export const ALLOWED_TOOLS = Object.freeze([
+  'get_config',
+  'list_processes',
+  'list_directory',
+  'get_file_info',
+  'read_file',
+]);
+const ALLOWED_TOOL_SET = new Set(ALLOWED_TOOLS);
 
 export function jsonResponse(body, status = 200, headers = {}) {
   return new Response(JSON.stringify(body), {
@@ -73,6 +81,30 @@ function validId(value, max = 128) {
   return typeof value === 'string' && value.length >= 1 && value.length <= max;
 }
 
+function validateRemoteArguments(toolName, args) {
+  if (!plainObject(args)) return false;
+  if (toolName === 'get_config' || toolName === 'list_processes') {
+    return exactKeys(args, []);
+  }
+  if (toolName === 'get_file_info') {
+    return exactKeys(args, ['path']) && typeof args.path === 'string' && args.path.length > 0;
+  }
+  if (toolName === 'list_directory') {
+    return (exactKeys(args, ['path']) || exactKeys(args, ['path', 'depth']))
+      && typeof args.path === 'string' && args.path.length > 0
+      && (args.depth === undefined || (Number.isInteger(args.depth) && args.depth >= 1 && args.depth <= 2));
+  }
+  if (toolName === 'read_file') {
+    const allowedKeys = ['path', 'offset', 'length'];
+    if (!exactKeys(args, Object.keys(args)) || !Object.keys(args).every((key) => allowedKeys.includes(key))) return false;
+    if (typeof args.path !== 'string' || args.path.length === 0) return false;
+    if (args.offset !== undefined && (!Number.isInteger(args.offset) || args.offset < 0 || args.offset > 100000)) return false;
+    if (args.length !== undefined && (!Number.isInteger(args.length) || args.length < 1 || args.length > 200)) return false;
+    return true;
+  }
+  return false;
+}
+
 export function validateToolCall(raw, expectedDeviceId, now = Date.now()) {
   const keys = ['type', 'call_id', 'device_id', 'tool_name', 'arguments', 'created_at', 'deadline_at'];
   if (!exactKeys(raw, keys) || raw.type !== 'TOOL_CALL') {
@@ -84,10 +116,10 @@ export function validateToolCall(raw, expectedDeviceId, now = Date.now()) {
   if (raw.device_id !== expectedDeviceId) {
     return { ok: false, status: 403, code: 'WRONG_DEVICE' };
   }
-  if (raw.tool_name !== ALLOWED_TOOL) {
+  if (!ALLOWED_TOOL_SET.has(raw.tool_name)) {
     return { ok: false, status: 403, code: 'TOOL_NOT_ALLOWED' };
   }
-  if (!plainObject(raw.arguments) || Object.keys(raw.arguments).length !== 0) {
+  if (!validateRemoteArguments(raw.tool_name, raw.arguments)) {
     return { ok: false, status: 400, code: 'INVALID_ARGUMENTS' };
   }
   const createdAt = Date.parse(raw.created_at);

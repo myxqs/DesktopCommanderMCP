@@ -124,8 +124,68 @@ function authChallenge(resourceMetadataUrl) {
     + '", error="insufficient_scope", error_description="native-rdc:read scope required"';
 }
 
-export function createMcpApiHandler({ invokeGetConfig, resourceMetadataUrl }) {
-  if (typeof invokeGetConfig !== 'function') throw new TypeError('invokeGetConfig is required');
+function plainObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function exactAllowedKeys(value, allowed) {
+  return plainObject(value) && Object.keys(value).every((key) => allowed.includes(key));
+}
+
+function validateMcpArguments(policy, args) {
+  if (!plainObject(args)) throw new McpError(ErrorCode.InvalidParams, 'Tool arguments must be an object');
+  if (policy.externalName === 'get_config' || policy.externalName === 'list_processes') {
+    if (Object.keys(args).length !== 0) throw new McpError(ErrorCode.InvalidParams, policy.externalName + ' does not accept arguments');
+    return {};
+  }
+  if (policy.externalName === 'get_file_info') {
+    if (!exactAllowedKeys(args, ['path']) || Object.keys(args).length !== 1 || typeof args.path !== 'string' || !args.path) {
+      throw new McpError(ErrorCode.InvalidParams, 'get_file_info requires only a non-empty path');
+    }
+    return { path: args.path };
+  }
+  if (policy.externalName === 'list_directory') {
+    if (!exactAllowedKeys(args, ['path', 'depth']) || typeof args.path !== 'string' || !args.path
+      || (args.depth !== undefined && (!Number.isInteger(args.depth) || args.depth < 1 || args.depth > 2))) {
+      throw new McpError(ErrorCode.InvalidParams, 'list_directory requires path and optional depth 1 or 2');
+    }
+    return { path: args.path, ...(args.depth === undefined ? {} : { depth: args.depth }) };
+  }
+  if (policy.externalName === 'read_file') {
+    if (!exactAllowedKeys(args, ['path', 'offset', 'length']) || typeof args.path !== 'string' || !args.path
+      || (args.offset !== undefined && (!Number.isInteger(args.offset) || args.offset < 0 || args.offset > 100000))
+      || (args.length !== undefined && (!Number.isInteger(args.length) || args.length < 1 || args.length > 200))) {
+      throw new McpError(ErrorCode.InvalidParams, 'read_file arguments are outside the bounded remote read schema');
+    }
+    return {
+      path: args.path,
+      ...(args.offset === undefined ? {} : { offset: args.offset }),
+      ...(args.length === undefined ? {} : { length: args.length }),
+    };
+  }
+  throw new McpError(ErrorCode.InvalidParams, 'Tool policy adapter is not implemented');
+}
+
+function sanitizeBoundedTextResult(toolResult) {
+  const parts = Array.isArray(toolResult?.content)
+    ? toolResult.content.filter((part) => part?.type === 'text' && typeof part.text === 'string')
+    : [];
+  if (parts.length === 0) throw new Error('Desktop Commander returned no supported text result');
+  let text = parts.map((part) => part.text).join('\n').replace(/\0/g, '');
+  if (text.length > 24000) text = text.slice(0, 24000) + '\n[remote result truncated]';
+  return text;
+}
+
+export function createMcpApiHandler({ invokeRemoteTool, invokeGetConfig, resourceMetadataUrl }) {
+  const invoke = typeof invokeRemoteTool === 'function'
+    ? invokeRemoteTool
+    : typeof invokeGetConfig === 'function'
+      ? async (env, policy) => {
+        if (policy.externalName !== 'get_config') throw new Error('Remote read adapter unavailable');
+        return invokeGetConfig(env);
+      }
+      : null;
+  if (!invoke) throw new TypeError('invokeRemoteTool is required');
 
   return {
     async fetch(request, env, ctx) {
@@ -148,7 +208,7 @@ export function createMcpApiHandler({ invokeGetConfig, resourceMetadataUrl }) {
         { name: 'native-rdc', version: '2.0.0' },
         {
           capabilities: { tools: {} },
-          instructions: 'Read-only access to the trusted Windows Desktop Commander configuration. No write, shell, browser, file, or arbitrary tool execution is available.',
+          instructions: 'Read-only access to a small allowlist of trusted Windows Desktop Commander reads. File access is restricted to approved roots and bounded text reads. No write, shell, browser, or arbitrary tool execution is available.',
         },
       );
 
@@ -162,15 +222,12 @@ export function createMcpApiHandler({ invokeGetConfig, resourceMetadataUrl }) {
           throw new McpError(ErrorCode.InvalidParams, 'Unknown or disallowed tool');
         }
         if (policy.approvalRequired) {
-          throw new McpError(ErrorCode.InvalidParams, 'Tool requires an approval flow that is not available in this milestone');
+          throw new McpError(ErrorCode.InvalidParams, 'Tool requires an approval flow');
         }
-        if (policy.invokeKey !== 'getConfig' || policy.sanitizerKey !== 'getConfig') {
+        if (policy.invokeKey !== 'remoteRead') {
           throw new McpError(ErrorCode.InvalidParams, 'Tool policy adapter is not implemented');
         }
-        const args = message.params.arguments ?? {};
-        if (!args || typeof args !== 'object' || Array.isArray(args) || Object.keys(args).length !== 0) {
-          throw new McpError(ErrorCode.InvalidParams, 'get_config does not accept arguments');
-        }
+        const args = validateMcpArguments(policy, message.params.arguments ?? {});
         if (!scopes.includes(MCP_SCOPE)) {
           return {
             isError: true,
@@ -181,7 +238,7 @@ export function createMcpApiHandler({ invokeGetConfig, resourceMetadataUrl }) {
 
         let terminal;
         try {
-          terminal = await invokeGetConfig(env);
+          terminal = await invoke(env, policy, args);
         } catch {
           return {
             isError: true,
@@ -192,32 +249,56 @@ export function createMcpApiHandler({ invokeGetConfig, resourceMetadataUrl }) {
         if (terminal?.type !== 'TOOL_RESULT' || terminal?.status !== 'completed') {
           return {
             isError: true,
-            content: [{ type: 'text', text: 'Desktop Commander get_config did not complete successfully.' }],
+            content: [{ type: 'text', text: 'Desktop Commander remote read did not complete successfully.' }],
           };
         }
 
-        let safe;
+        if (policy.sanitizerKey === 'getConfig') {
+          let safe;
+          try {
+            safe = sanitizeGetConfigResult(terminal.result);
+          } catch {
+            return {
+              isError: true,
+              content: [{ type: 'text', text: 'Desktop Commander returned an unsupported configuration result.' }],
+            };
+          }
+          const text = JSON.stringify(safe);
+          if (new TextEncoder().encode(text).byteLength > MAX_MCP_RESULT_BYTES) {
+            return {
+              isError: true,
+              content: [{ type: 'text', text: 'Sanitized configuration exceeded the result limit.' }],
+            };
+          }
+          return {
+            content: [{ type: 'text', text }],
+            structuredContent: safe,
+          };
+        }
+
+        if (policy.sanitizerKey !== 'boundedText') {
+          return {
+            isError: true,
+            content: [{ type: 'text', text: 'Remote result sanitizer is unavailable.' }],
+          };
+        }
+
+        let text;
         try {
-          safe = sanitizeGetConfigResult(terminal.result);
+          text = sanitizeBoundedTextResult(terminal.result);
         } catch {
           return {
             isError: true,
-            content: [{ type: 'text', text: 'Desktop Commander returned an unsupported configuration result.' }],
+            content: [{ type: 'text', text: 'Desktop Commander returned an unsupported remote read result.' }],
           };
         }
-
-        const text = JSON.stringify(safe);
         if (new TextEncoder().encode(text).byteLength > MAX_MCP_RESULT_BYTES) {
           return {
             isError: true,
-            content: [{ type: 'text', text: 'Sanitized configuration exceeded the M2 result limit.' }],
+            content: [{ type: 'text', text: 'Sanitized remote result exceeded the result limit.' }],
           };
         }
-
-        return {
-          content: [{ type: 'text', text }],
-          structuredContent: safe,
-        };
+        return { content: [{ type: 'text', text }] };
       });
 
       const transport = new WebStandardStreamableHTTPServerTransport({

@@ -23,10 +23,16 @@ test('permission classes are explicit and closed', () => {
   ]);
 });
 
-test('default registry validates and exposes only get_config', () => {
+test('default registry validates and exposes only explicit registered tools', () => {
   assert.equal(validatePolicyRegistry(DEFAULT_POLICY_REGISTRY), true);
-  assert.deepEqual(Object.keys(DEFAULT_POLICY_REGISTRY), ['get_config']);
-  assert.deepEqual(listPolicyDescriptors().map((tool) => tool.name), ['get_config']);
+  assert.deepEqual(Object.keys(DEFAULT_POLICY_REGISTRY), [
+    'get_config',
+    'list_processes',
+    'list_directory',
+    'get_file_info',
+    'read_file',
+  ]);
+  assert.deepEqual(listPolicyDescriptors().map((tool) => tool.name), Object.keys(DEFAULT_POLICY_REGISTRY));
 });
 
 test('get_config policy is explicit read safe and redispatchable', () => {

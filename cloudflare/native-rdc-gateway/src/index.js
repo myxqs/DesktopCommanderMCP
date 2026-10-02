@@ -1,5 +1,6 @@
 import {
   ALLOWED_TOOL,
+  ALLOWED_TOOLS,
   MAX_CALL_TIMEOUT_MS,
   MAX_DEVICE_MESSAGE_BYTES,
   authorized,
@@ -252,7 +253,11 @@ export class NativeRdcConnectionOwner {
 
     if (message.type === 'TOOL_LIST') {
       const names = message.tools.map((tool) => tool?.name).filter(Boolean);
-      if (names.length !== 1 || names[0] !== ALLOWED_TOOL) {
+      const allowed = new Set(ALLOWED_TOOLS);
+      const unique = new Set(names);
+      if (!names.includes(ALLOWED_TOOL)
+        || names.length !== unique.size
+        || names.some((name) => !allowed.has(name))) {
         ws.close(1008, 'invalid capability set');
         await this.markDisconnectedIfCurrent(attachment.connectionId);
         return;

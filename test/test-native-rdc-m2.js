@@ -147,8 +147,13 @@ test('actual Streamable HTTP initialize and tools/list succeed', async () => {
   client = new Client({ name: 'native-rdc-m2-test', version: '1.0.0' });
   await client.connect(transport);
   const listed = await client.listTools();
-  assert.equal(listed.tools.length, 1);
-  assert.equal(listed.tools[0].name, 'get_config');
+  assert.deepEqual(listed.tools.map((tool) => tool.name), [
+    'get_config',
+    'list_processes',
+    'list_directory',
+    'get_file_info',
+    'read_file',
+  ]);
   assert.equal(listed.tools[0].annotations?.readOnlyHint, true);
   assert.equal(listed.tools[0].annotations?.openWorldHint, false);
 });

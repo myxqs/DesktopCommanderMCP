@@ -10,6 +10,7 @@ export interface NativeRdcMachineCredential {
   gatewayUrl: string;
   deviceId: string;
   deviceToken: string;
+  readRoots?: string[];
 }
 
 export interface DpapiCodec {
@@ -90,7 +91,20 @@ function validateCredential(value: unknown): NativeRdcMachineCredential {
   if (!/^https:\/\//i.test(gatewayUrl)) throw new Error('Native RDC gateway URL is invalid');
   if (!deviceId) throw new Error('Native RDC device ID is missing');
   if (deviceToken.length < 24) throw new Error('Native RDC device credential is invalid');
-  return { gatewayUrl: gatewayUrl.replace(/\/$/, ''), deviceId, deviceToken };
+  const readRoots = raw.readRoots === undefined
+    ? []
+    : Array.isArray(raw.readRoots)
+      ? raw.readRoots.filter((item): item is string => typeof item === 'string' && item.trim().length > 0).map((item) => item.trim())
+      : null;
+  if (readRoots === null || readRoots.length > 16) {
+    throw new Error('Native RDC read roots are invalid');
+  }
+  return {
+    gatewayUrl: gatewayUrl.replace(/\/$/, ''),
+    deviceId,
+    deviceToken,
+    readRoots,
+  };
 }
 
 export async function saveProtectedMachineCredential(

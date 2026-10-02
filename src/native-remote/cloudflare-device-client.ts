@@ -14,9 +14,12 @@ import {
   type ToolCall,
 } from './protocol.js';
 import type { NativeExecutor } from './device-client.js';
+import {
+  REMOTE_READ_TOOLS,
+  validateRemoteReadArguments,
+} from './safe-read-policy.js';
 
 const MAX_DEVICE_MESSAGE_BYTES = 1024 * 1024;
-const ALLOWED_REMOTE_TOOL = 'get_config';
 
 export interface CloudflareDeviceClientOptions {
   gatewayUrl: string;
@@ -27,6 +30,7 @@ export interface CloudflareDeviceClientOptions {
   reconnectMs?: number;
   connectTimeoutMs?: number;
   executor?: NativeExecutor;
+  readRoots?: string[];
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -204,12 +208,15 @@ export class CloudflareDeviceClient {
     }), socket);
 
     const capabilities = await this.executor.listClientTools();
-    const descriptor = capabilities.tools.find((tool: any) => tool?.name === ALLOWED_REMOTE_TOOL);
-    if (!descriptor) throw new Error('Local Desktop Commander does not expose get_config');
+    const allowedNames = new Set<string>(REMOTE_READ_TOOLS);
+    const descriptors = capabilities.tools.filter((tool: any) => allowedNames.has(tool?.name));
+    if (!descriptors.some((tool: any) => tool?.name === 'get_config')) {
+      throw new Error('Local Desktop Commander does not expose get_config');
+    }
     this.send(ToolListSchema.parse({
       type: 'TOOL_LIST',
       device_id: this.options.deviceId,
-      tools: [descriptor],
+      tools: descriptors,
       sent_at: new Date().toISOString(),
     }), socket);
   }
@@ -269,20 +276,30 @@ export class CloudflareDeviceClient {
       this.socket?.close(1008, 'wrong device');
       return;
     }
-    if (call.tool_name !== ALLOWED_REMOTE_TOOL || Object.keys(call.arguments).length !== 0) {
+    let safeArguments: Record<string, unknown>;
+    try {
+      safeArguments = await validateRemoteReadArguments(
+        call.tool_name,
+        call.arguments,
+        this.options.readRoots ?? [],
+      );
+    } catch (error) {
       const denied = ToolErrorSchema.parse({
         type: 'TOOL_ERROR',
         call_id: call.call_id,
         device_id: this.options.deviceId,
         status: 'failed',
-        error: { message: 'Remote tool is not permitted by the M1 device policy', code: 'TOOL_NOT_ALLOWED' },
+        error: {
+          message: error instanceof Error ? error.message.slice(0, 512) : 'Remote read policy denied the call',
+          code: 'TOOL_NOT_ALLOWED',
+        },
         completed_at: new Date().toISOString(),
       });
       this.rememberTerminal(denied);
       this.send(denied);
       return;
     }
-    void this.handleCall(call);
+    void this.handleCall({ ...call, arguments: safeArguments });
   }
 
   private async handleCall(call: ToolCall): Promise<void> {
@@ -324,8 +341,8 @@ export class CloudflareDeviceClient {
   private async execute(call: ToolCall): Promise<TerminalToolMessage> {
     try {
       const result = await this.executor.callClientTool(
-        ALLOWED_REMOTE_TOOL,
-        {},
+        call.tool_name,
+        call.arguments,
         { native_rdc_m1_call_id: call.call_id },
       );
       const terminal = ToolResultSchema.parse({

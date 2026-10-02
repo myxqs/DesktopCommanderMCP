@@ -16,16 +16,19 @@ function connectionOwner(env) {
   return env.CONNECTION_OWNER.get(id);
 }
 
-async function invokeGetConfig(env) {
+async function invokeRemoteTool(env, policy, args) {
+  if (!policy || policy.invokeKey !== 'remoteRead') {
+    throw new Error('Unsupported Native RDC policy');
+  }
   const created = Date.now();
   const call = {
     type: 'TOOL_CALL',
-    call_id: 'm2-' + crypto.randomUUID(),
+    call_id: 'm3-' + crypto.randomUUID(),
     device_id: env.DEVICE_ID,
-    tool_name: 'get_config',
-    arguments: {},
+    tool_name: policy.internalTool,
+    arguments: args,
     created_at: new Date(created).toISOString(),
-    deadline_at: new Date(created + 15000).toISOString(),
+    deadline_at: new Date(created + policy.timeoutMs).toISOString(),
   };
   const response = await connectionOwner(env).fetch(new Request('https://internal/call', {
     method: 'POST',
@@ -37,7 +40,7 @@ async function invokeGetConfig(env) {
 }
 
 const mcpHandler = createMcpApiHandler({
-  invokeGetConfig,
+  invokeRemoteTool,
   resourceMetadataUrl: RESOURCE_METADATA_URL,
 });
 
