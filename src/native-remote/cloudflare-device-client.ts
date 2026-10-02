@@ -291,7 +291,7 @@ export class CloudflareDeviceClient {
         device_id: this.options.deviceId,
         status: 'failed',
         error: {
-          message: error instanceof Error ? error.message.slice(0, 512) : 'Remote read policy denied the call',
+          message: error instanceof Error ? error.message.slice(0, 512) : 'Remote device policy denied the call',
           code: 'TOOL_NOT_ALLOWED',
         },
         completed_at: new Date().toISOString(),
