@@ -73,7 +73,12 @@
     "native-rdc:m1:client": "npm run build && node dist/native-remote/cloudflare-client-main.js",
     "native-rdc:m1:test": "npm run build && node test/test-native-rdc-m1.js",
     "native-rdc:m2:test": "node test/test-native-rdc-m2.js",
-    "native-rdc:m2:remote-proof": "node scripts/native-rdc-m2-remote-proof.js"
+    "native-rdc:m2:remote-proof": "node scripts/native-rdc-m2-remote-proof.js",
+    "native-rdc:m3a:test": "npm run build && node test/test-native-rdc-m3a.js",
+    "native-rdc:m3a:supervisor": "npm run build && node dist/native-remote/windows-supervisor.js",
+    "native-rdc:m3a:credential:status": "npm run build && node dist/native-remote/windows-credential-cli.js status",
+    "native-rdc:m3a:credential:store": "npm run build && node dist/native-remote/windows-credential-cli.js store",
+    "native-rdc:m3a:task": "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/native-rdc-windows.ps1"
   },
   "publishConfig": {
     "access": "public"

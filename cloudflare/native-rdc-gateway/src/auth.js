@@ -1,27 +1,5 @@
-const DEVICE_ORIGIN_KEY = 'native-rdc:m2:trusted-device-origin-sha256';
-
 function escapeHtml(value) {
   return String(value).replace(/[&<>"']/g, (char) => '&#' + char.charCodeAt(0) + ';');
-}
-
-async function hashText(value) {
-  const bytes = new TextEncoder().encode(value);
-  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
-  return Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('');
-}
-
-async function requestOriginDigest(request) {
-  const source = request.headers.get('cf-connecting-ip');
-  return source ? hashText(source) : null;
-}
-
-async function trustedAuthorizationOrigin(request, env) {
-  if (!env.OAUTH_KV) return false;
-  const [actual, expected] = await Promise.all([
-    requestOriginDigest(request),
-    env.OAUTH_KV.get(DEVICE_ORIGIN_KEY),
-  ]);
-  return Boolean(actual && expected && actual === expected);
 }
 
 function securityHeaders(headers = new Headers()) {
@@ -50,7 +28,7 @@ function consentPage(details, handle) {
     + '<h1>Authorize ' + name + '</h1>'
     + '<p>' + origin + ' Access will return to <strong>' + escapeHtml(details.redirectHost) + '</strong>.</p>'
     + warning
-    + '<p>This M2 proof only authorizes from the network currently hosting the authenticated trusted Windows device.</p>'
+    + '<p>Authorization is restricted to the configured Native RDC owner through Cloudflare Access.</p>'
     + '<form method="post">'
     + '<input type="hidden" name="handle" value="' + escapeHtml(handle) + '">'
     + '<p>' + scopes + '</p>'
@@ -63,10 +41,29 @@ function html(body, status = 200, headers = new Headers()) {
   return new Response(body, { status, headers: securityHeaders(headers) });
 }
 
-async function handleAuthorize(request, env) {
-  if (!await trustedAuthorizationOrigin(request, env)) {
+function normalizedOwner(value) {
+  return typeof value === 'string' ? value.trim().toLowerCase() : '';
+}
+
+async function trustedAuthorizationOwner(env, ctx) {
+  const expected = normalizedOwner(env.OWNER_EMAIL);
+  if (!expected || !ctx?.access || typeof ctx.access.getIdentity !== 'function') return null;
+  let identity;
+  try {
+    identity = await ctx.access.getIdentity();
+  } catch {
+    return null;
+  }
+  const email = normalizedOwner(identity?.email);
+  if (!email || email !== expected) return null;
+  return { userId: 'cloudflare-access:' + email, email };
+}
+
+async function handleAuthorize(request, env, ctx) {
+  const owner = await trustedAuthorizationOwner(env, ctx);
+  if (!owner) {
     return html(
-      '<!doctype html><meta charset="utf-8"><h1>Authorization unavailable</h1><p>Authorization must be initiated from the network currently hosting the trusted Windows device.</p>',
+      '<!doctype html><meta charset="utf-8"><h1>Authorization unavailable</h1><p>Cloudflare Access owner authentication is required.</p>',
       403,
     );
   }
@@ -81,7 +78,6 @@ async function handleAuthorize(request, env) {
       const consent = await oauth.beginConsent(authRequest);
       return html(consentPage(details, consent.handle), 200, consent.headers);
     }
-
     if (request.method === 'POST') {
       const form = await request.formData();
       const handle = String(form.get('handle') || '');
@@ -95,10 +91,14 @@ async function handleAuthorize(request, env) {
       });
       const { redirectTo } = await oauth.completeAuthorization({
         request: approved.request,
-        userId: 'native-rdc-owner',
-        metadata: { profile: 'native-rdc-owner', proof: 'trusted-device-network-origin' },
+        userId: owner.userId,
+        metadata: {
+          profile: 'native-rdc-owner',
+          proof: 'cloudflare-access',
+          owner: owner.userId,
+        },
         scope: approved.request.scope,
-        props: { userId: 'native-rdc-owner' },
+        props: { userId: owner.userId },
       });
       approved.headers.set('Location', redirectTo);
       return new Response(null, { status: 302, headers: approved.headers });
@@ -114,32 +114,18 @@ async function handleAuthorize(request, env) {
   }
 }
 
-async function recordTrustedDeviceOrigin(request, env, response) {
-  if (response.status !== 101 || !env.OAUTH_KV) return;
-  const digest = await requestOriginDigest(request);
-  if (!digest) return;
-  await env.OAUTH_KV.put(DEVICE_ORIGIN_KEY, digest, { expirationTtl: 86400 });
-}
-
 export function createDefaultHandler(fallbackFetch) {
   if (typeof fallbackFetch !== 'function') throw new TypeError('fallbackFetch is required');
   return {
-    async fetch(request, env) {
+    async fetch(request, env, ctx) {
       const url = new URL(request.url);
-      if (url.pathname === '/authorize') return handleAuthorize(request, env);
-
-      const response = await fallbackFetch(request, env);
-      if (url.pathname === '/v1/device/connect') {
-        await recordTrustedDeviceOrigin(request, env, response);
-      }
-      return response;
+      if (url.pathname === '/authorize') return handleAuthorize(request, env, ctx);
+      return fallbackFetch(request, env, ctx);
     },
   };
 }
 
 export {
-  DEVICE_ORIGIN_KEY,
   handleAuthorize,
-  requestOriginDigest,
-  trustedAuthorizationOrigin,
+  trustedAuthorizationOwner,
 };

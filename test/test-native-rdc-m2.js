@@ -10,9 +10,7 @@ import {
   sanitizeGetConfigResult,
 } from '../cloudflare/native-rdc-gateway/src/mcp.js';
 import {
-  DEVICE_ORIGIN_KEY,
-  requestOriginDigest,
-  trustedAuthorizationOrigin,
+  trustedAuthorizationOwner,
 } from '../cloudflare/native-rdc-gateway/src/auth.js';
 
 const goodConfig = {
@@ -121,24 +119,20 @@ test('tool descriptor is explicitly read-only and OAuth scoped', () => {
   ]);
 });
 
-test('authorization origin must match the authenticated device network digest', async () => {
-  const ip = '203.0.113.77';
-  const request = new Request('https://example.test/authorize', {
-    headers: { 'cf-connecting-ip': ip },
-  });
-  const digest = await requestOriginDigest(request);
-  const kv = {
-    async get(key) {
-      assert.equal(key, DEVICE_ORIGIN_KEY);
-      return digest;
-    },
-  };
-  assert.equal(await trustedAuthorizationOrigin(request, { OAUTH_KV: kv }), true);
-
-  const wrong = new Request('https://example.test/authorize', {
-    headers: { 'cf-connecting-ip': '198.51.100.12' },
-  });
-  assert.equal(await trustedAuthorizationOrigin(wrong, { OAUTH_KV: kv }), false);
+test('authorization requires configured Cloudflare Access owner identity', async () => {
+  const access = { async getIdentity() { return { email: 'owner@example.test' }; } };
+  assert.deepEqual(
+    await trustedAuthorizationOwner({ OWNER_EMAIL: 'owner@example.test' }, { access }),
+    { userId: 'cloudflare-access:owner@example.test', email: 'owner@example.test' },
+  );
+  assert.equal(
+    await trustedAuthorizationOwner({ OWNER_EMAIL: 'other@example.test' }, { access }),
+    null,
+  );
+  assert.equal(
+    await trustedAuthorizationOwner({ OWNER_EMAIL: 'owner@example.test' }, {}),
+    null,
+  );
 });
 
 let baseUrl;
