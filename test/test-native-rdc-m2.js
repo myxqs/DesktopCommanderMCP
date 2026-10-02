@@ -153,7 +153,10 @@ test('actual Streamable HTTP initialize and tools/list succeed', async () => {
     'list_directory',
     'get_file_info',
     'read_file',
+    'request_create_directory',
+    'execute_approved_action',
   ]);
+  assert.equal(listed.tools.some((tool) => tool.name === 'create_directory'), false);
   assert.equal(listed.tools[0].annotations?.readOnlyHint, true);
   assert.equal(listed.tools[0].annotations?.openWorldHint, false);
 });
@@ -200,6 +203,20 @@ test('separate MCP calls may redispatch and therefore are not exactly-once', asy
   await client.callTool({ name: 'get_config', arguments: {} });
   await client.callTool({ name: 'get_config', arguments: {} });
   assert.equal(backendCalls, before + 2);
+});
+
+test('read-only OAuth token cannot enter approval workflow', async () => {
+  await assert.rejects(
+    () => client.callTool({ name: 'request_create_directory', arguments: { path: 'C:\\Approved\\x' } }),
+    /native-rdc:write scope required|Invalid/,
+  );
+});
+
+test('direct create_directory is not remotely callable', async () => {
+  await assert.rejects(
+    () => client.callTool({ name: 'create_directory', arguments: { path: 'C:\\Approved\\x' } }),
+    /Unknown or disallowed tool|Invalid/,
+  );
 });
 
 test('start_process is not remotely callable', async () => {

@@ -11,6 +11,7 @@ export interface NativeRdcMachineCredential {
   deviceId: string;
   deviceToken: string;
   readRoots?: string[];
+  writeRoots?: string[];
 }
 
 export interface DpapiCodec {
@@ -99,11 +100,20 @@ function validateCredential(value: unknown): NativeRdcMachineCredential {
   if (readRoots === null || readRoots.length > 16) {
     throw new Error('Native RDC read roots are invalid');
   }
+  const writeRoots = raw.writeRoots === undefined
+    ? []
+    : Array.isArray(raw.writeRoots)
+      ? raw.writeRoots.filter((item): item is string => typeof item === 'string' && item.trim().length > 0).map((item) => item.trim())
+      : null;
+  if (writeRoots === null || writeRoots.length > 8) {
+    throw new Error('Native RDC write roots are invalid');
+  }
   return {
     gatewayUrl: gatewayUrl.replace(/\/$/, ''),
     deviceId,
     deviceToken,
     readRoots,
+    writeRoots,
   };
 }
 

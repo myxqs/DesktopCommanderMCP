@@ -18,6 +18,7 @@ import {
   REMOTE_READ_TOOLS,
   validateRemoteReadArguments,
 } from './safe-read-policy.js';
+import { validateRemoteWriteArguments } from './safe-write-policy.js';
 
 const MAX_DEVICE_MESSAGE_BYTES = 1024 * 1024;
 
@@ -31,6 +32,7 @@ export interface CloudflareDeviceClientOptions {
   connectTimeoutMs?: number;
   executor?: NativeExecutor;
   readRoots?: string[];
+  writeRoots?: string[];
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -209,6 +211,7 @@ export class CloudflareDeviceClient {
 
     const capabilities = await this.executor.listClientTools();
     const allowedNames = new Set<string>(REMOTE_READ_TOOLS);
+    if ((this.options.writeRoots ?? []).length > 0) allowedNames.add('create_directory');
     const descriptors = capabilities.tools.filter((tool: any) => allowedNames.has(tool?.name));
     if (!descriptors.some((tool: any) => tool?.name === 'get_config')) {
       throw new Error('Local Desktop Commander does not expose get_config');
@@ -278,11 +281,9 @@ export class CloudflareDeviceClient {
     }
     let safeArguments: Record<string, unknown>;
     try {
-      safeArguments = await validateRemoteReadArguments(
-        call.tool_name,
-        call.arguments,
-        this.options.readRoots ?? [],
-      );
+      safeArguments = call.tool_name === 'create_directory'
+        ? await validateRemoteWriteArguments(call.tool_name, call.arguments, this.options.writeRoots ?? [])
+        : await validateRemoteReadArguments(call.tool_name, call.arguments, this.options.readRoots ?? []);
     } catch (error) {
       const denied = ToolErrorSchema.parse({
         type: 'TOOL_ERROR',

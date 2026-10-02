@@ -16,6 +16,11 @@ async function main(): Promise<void> {
     .map((value) => value.trim())
     .filter(Boolean)
     .slice(0, 16);
+  const writeRoots = (process.env.NATIVE_RDC_WRITE_ROOTS || '')
+    .split(';')
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .slice(0, 8);
 
   const client = new CloudflareDeviceClient({
     gatewayUrl,
@@ -23,10 +28,11 @@ async function main(): Promise<void> {
     deviceId,
     deviceName: os.hostname(),
     readRoots,
+    writeRoots,
   });
   await client.start();
   console.log(`Native RDC M1 device connected outbound as ${deviceId}`);
-  console.log('Remote M1 policy permits get_config only. Official Desktop Commander Remote remains independent.');
+  console.log('Native RDC device enforces explicit read tools and approval-gated create_directory only. Official Desktop Commander Remote remains independent.');
 
   const stop = async (signal: string) => {
     console.log(`Native RDC M1 device stopping (${signal})`);

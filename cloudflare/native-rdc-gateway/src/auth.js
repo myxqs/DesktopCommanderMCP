@@ -59,6 +59,57 @@ async function trustedAuthorizationOwner(env, ctx) {
   return { userId: 'cloudflare-access:' + email, email };
 }
 
+function connectionOwner(env) {
+  const id = env.CONNECTION_OWNER.idFromName('primary');
+  return env.CONNECTION_OWNER.get(id);
+}
+
+function approvalPage(record) {
+  const target = escapeHtml(record?.arguments?.path || 'unknown target');
+  const id = escapeHtml(record.id);
+  const fingerprint = escapeHtml(record.fingerprint);
+  return '<!doctype html><meta charset="utf-8"><title>Native RDC approval</title>'
+    + '<style>body{font-family:system-ui;max-width:42rem;margin:4rem auto;padding:0 1rem;line-height:1.5}code{word-break:break-all}button{padding:.6rem 1rem;margin-right:.5rem}</style>'
+    + '<h1>Approve Native RDC action</h1>'
+    + '<p><strong>Action:</strong> create directory</p><p><strong>Target:</strong> <code>' + target + '</code></p>'
+    + '<p>This approval is single-use and expires automatically.</p>'
+    + '<form method="post"><input type="hidden" name="id" value="' + id + '">'
+    + '<input type="hidden" name="fingerprint" value="' + fingerprint + '">'
+    + '<button name="decision" value="approve">Approve</button><button name="decision" value="deny">Deny</button></form>';
+}
+
+async function handleApproval(request, env, ctx, id) {
+  const owner = await trustedAuthorizationOwner(env, ctx);
+  if (!owner) return html('<!doctype html><meta charset="utf-8"><h1>Approval unavailable</h1><p>Cloudflare Access owner authentication is required.</p>', 403);
+  const stub = connectionOwner(env);
+  if (request.method === 'GET') {
+    const response = await stub.fetch('https://internal/approval/get?id=' + encodeURIComponent(id));
+    if (!response.ok) return html('<!doctype html><meta charset="utf-8"><h1>Approval unavailable</h1>', response.status);
+    const record = await response.json();
+    if (record.ownerId !== owner.userId || record.state !== 'REQUESTED') {
+      return html('<!doctype html><meta charset="utf-8"><h1>Approval is not pending</h1>', 409);
+    }
+    return html(approvalPage(record));
+  }
+  if (request.method === 'POST') {
+    const form = await request.formData();
+    const body = {
+      ownerId: owner.userId,
+      id: String(form.get('id') || ''),
+      fingerprint: String(form.get('fingerprint') || ''),
+      decision: String(form.get('decision') || ''),
+    };
+    if (body.id !== id) return html('<!doctype html><meta charset="utf-8"><h1>Approval mismatch</h1>', 400);
+    const response = await stub.fetch(new Request('https://internal/approval/decide', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    }));
+    if (!response.ok) return html('<!doctype html><meta charset="utf-8"><h1>Approval decision rejected</h1>', response.status);
+    const result = await response.json();
+    return html('<!doctype html><meta charset="utf-8"><h1>' + (result.state === 'APPROVED' ? 'Approved' : 'Denied') + '</h1><p>You can return to the MCP client.</p>');
+  }
+  return new Response('Method not allowed', { status: 405, headers: { allow: 'GET, POST' } });
+}
+
 async function handleAuthorize(request, env, ctx) {
   const owner = await trustedAuthorizationOwner(env, ctx);
   if (!owner) {
@@ -120,6 +171,8 @@ export function createDefaultHandler(fallbackFetch) {
     async fetch(request, env, ctx) {
       const url = new URL(request.url);
       if (url.pathname === '/authorize') return handleAuthorize(request, env, ctx);
+      const approvalMatch = /^\/approvals\/([0-9a-f-]{36})$/.exec(url.pathname);
+      if (approvalMatch) return handleApproval(request, env, ctx, approvalMatch[1]);
       return fallbackFetch(request, env, ctx);
     },
   };

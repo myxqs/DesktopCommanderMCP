@@ -92,6 +92,7 @@ function defaultCreateClient(credential: NativeRdcMachineCredential): ClientLike
     deviceToken: credential.deviceToken,
     deviceId: credential.deviceId,
     readRoots: credential.readRoots ?? [],
+    writeRoots: credential.writeRoots ?? [],
   });
 }
 

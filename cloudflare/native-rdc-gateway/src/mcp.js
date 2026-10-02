@@ -15,7 +15,10 @@ import {
 export const MCP_ORIGIN = 'https://native-rdc-gateway.elliot-mercer-uk.workers.dev';
 export const MCP_RESOURCE = MCP_ORIGIN + '/mcp';
 export const MCP_SCOPE = 'native-rdc:read';
+export const MCP_WRITE_SCOPE = 'native-rdc:write';
 export const MCP_TOOL_NAME = 'get_config';
+export const REQUEST_CREATE_DIRECTORY_TOOL_NAME = 'request_create_directory';
+export const EXECUTE_APPROVED_ACTION_TOOL_NAME = 'execute_approved_action';
 export const MAX_MCP_REQUEST_BYTES = 64 * 1024;
 export const MAX_MCP_RESULT_BYTES = 32 * 1024;
 
@@ -60,6 +63,24 @@ function descriptorForPolicy(policy) {
 }
 
 export const GET_CONFIG_TOOL = Object.freeze(descriptorForPolicy(GET_CONFIG_POLICY));
+
+export const REQUEST_CREATE_DIRECTORY_TOOL = Object.freeze({
+  name: REQUEST_CREATE_DIRECTORY_TOOL_NAME,
+  title: 'Request directory creation',
+  description: 'Create a short-lived approval request for one directory inside an approved Native RDC write root. This does not execute the write.',
+  inputSchema: { type: 'object', properties: { path: { type: 'string', minLength: 1, maxLength: 4096 } }, required: ['path'], additionalProperties: false },
+  annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+  securitySchemes: [{ type: 'oauth2', scopes: [MCP_WRITE_SCOPE] }],
+});
+
+export const EXECUTE_APPROVED_ACTION_TOOL = Object.freeze({
+  name: EXECUTE_APPROVED_ACTION_TOOL_NAME,
+  title: 'Execute approved Native RDC action',
+  description: 'Execute a previously human-approved, single-use Native RDC action. Approval must match exactly and remain unexpired.',
+  inputSchema: { type: 'object', properties: { approval_id: { type: 'string', minLength: 36, maxLength: 36 }, fingerprint: { type: 'string', minLength: 64, maxLength: 64 } }, required: ['approval_id', 'fingerprint'], additionalProperties: false },
+  annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+  securitySchemes: [{ type: 'oauth2', scopes: [MCP_WRITE_SCOPE] }],
+});
 
 function safeScalar(value, type) {
   return typeof value === type ? value : null;
@@ -176,7 +197,7 @@ function sanitizeBoundedTextResult(toolResult) {
   return text;
 }
 
-export function createMcpApiHandler({ invokeRemoteTool, invokeGetConfig, resourceMetadataUrl }) {
+export function createMcpApiHandler({ invokeRemoteTool, invokeGetConfig, requestApproval, executeApprovedAction, resourceMetadataUrl }) {
   const invoke = typeof invokeRemoteTool === 'function'
     ? invokeRemoteTool
     : typeof invokeGetConfig === 'function'
@@ -208,26 +229,57 @@ export function createMcpApiHandler({ invokeRemoteTool, invokeGetConfig, resourc
         { name: 'native-rdc', version: '2.0.0' },
         {
           capabilities: { tools: {} },
-          instructions: 'Read-only access to a small allowlist of trusted Windows Desktop Commander reads. File access is restricted to approved roots and bounded text reads. No write, shell, browser, or arbitrary tool execution is available.',
+          instructions: 'Native RDC exposes bounded read tools plus one separately scoped approval workflow for creating a directory inside an approved write root. Direct writes, shell, browser, deletion, and arbitrary tool execution are unavailable.',
         },
       );
 
       server.setRequestHandler(ListToolsRequestSchema, async () => ({
-        tools: Object.values(DEFAULT_POLICY_REGISTRY).map(descriptorForPolicy),
+        tools: [
+          ...Object.values(DEFAULT_POLICY_REGISTRY).map(descriptorForPolicy),
+          REQUEST_CREATE_DIRECTORY_TOOL,
+          EXECUTE_APPROVED_ACTION_TOOL,
+        ],
       }));
 
       server.setRequestHandler(CallToolRequestSchema, async (message) => {
-        const policy = getPolicy(message.params.name);
-        if (!policy) {
-          throw new McpError(ErrorCode.InvalidParams, 'Unknown or disallowed tool');
+        const toolName = message.params.name;
+        const rawArgs = message.params.arguments ?? {};
+        const ownerId = typeof ctx?.auth?.props?.userId === 'string'
+          ? ctx.auth.props.userId
+          : typeof ctx?.auth?.userId === 'string' ? ctx.auth.userId : null;
+
+        if (toolName === REQUEST_CREATE_DIRECTORY_TOOL_NAME) {
+          if (!scopes.includes(MCP_WRITE_SCOPE)) throw new McpError(ErrorCode.InvalidParams, 'native-rdc:write scope required');
+          if (!ownerId || typeof requestApproval !== 'function') throw new McpError(ErrorCode.InvalidParams, 'Owner approval service unavailable');
+          if (!plainObject(rawArgs) || !exactAllowedKeys(rawArgs, ['path']) || Object.keys(rawArgs).length !== 1
+            || typeof rawArgs.path !== 'string' || !rawArgs.path.trim()) {
+            throw new McpError(ErrorCode.InvalidParams, 'request_create_directory requires exactly one non-empty path');
+          }
+          const approval = await requestApproval(env, ownerId, { path: rawArgs.path });
+          const text = JSON.stringify(approval);
+          return { content: [{ type: 'text', text }], structuredContent: approval };
         }
-        if (policy.approvalRequired) {
-          throw new McpError(ErrorCode.InvalidParams, 'Tool requires an approval flow');
+
+        if (toolName === EXECUTE_APPROVED_ACTION_TOOL_NAME) {
+          if (!scopes.includes(MCP_WRITE_SCOPE)) throw new McpError(ErrorCode.InvalidParams, 'native-rdc:write scope required');
+          if (!ownerId || typeof executeApprovedAction !== 'function') throw new McpError(ErrorCode.InvalidParams, 'Approved-action service unavailable');
+          if (!plainObject(rawArgs) || !exactAllowedKeys(rawArgs, ['approval_id', 'fingerprint'])
+            || Object.keys(rawArgs).length !== 2
+            || typeof rawArgs.approval_id !== 'string' || !/^[0-9a-f-]{36}$/.test(rawArgs.approval_id)
+            || typeof rawArgs.fingerprint !== 'string' || !/^[0-9a-f]{64}$/.test(rawArgs.fingerprint)) {
+            throw new McpError(ErrorCode.InvalidParams, 'execute_approved_action requires approval_id and fingerprint');
+          }
+          const result = await executeApprovedAction(env, ownerId, rawArgs.approval_id, rawArgs.fingerprint);
+          const text = JSON.stringify(result);
+          return { content: [{ type: 'text', text }], structuredContent: result, ...(result.ok ? {} : { isError: true }) };
         }
-        if (policy.invokeKey !== 'remoteRead') {
-          throw new McpError(ErrorCode.InvalidParams, 'Tool policy adapter is not implemented');
+
+        const policy = getPolicy(toolName);
+        if (!policy) throw new McpError(ErrorCode.InvalidParams, 'Unknown or disallowed tool');
+        if (policy.approvalRequired || policy.invokeKey !== 'remoteRead') {
+          throw new McpError(ErrorCode.InvalidParams, 'Tool requires a separate approval flow');
         }
-        const args = validateMcpArguments(policy, message.params.arguments ?? {});
+        const args = validateMcpArguments(policy, rawArgs);
         if (!scopes.includes(MCP_SCOPE)) {
           return {
             isError: true,

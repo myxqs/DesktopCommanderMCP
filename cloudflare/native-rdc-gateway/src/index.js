@@ -1,6 +1,7 @@
 import {
   ALLOWED_TOOL,
   ALLOWED_TOOLS,
+  DEVICE_ALLOWED_TOOLS,
   MAX_CALL_TIMEOUT_MS,
   MAX_DEVICE_MESSAGE_BYTES,
   authorized,
@@ -13,6 +14,25 @@ import {
 
 const INSTANCE_NAME = 'primary';
 const CALL_PREFIX = 'call:';
+const APPROVAL_PREFIX = 'approval:';
+const APPROVAL_TTL_MS = 5 * 60 * 1000;
+
+function plainObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function stableJson(value) {
+  if (Array.isArray(value)) return '[' + value.map(stableJson).join(',') + ']';
+  if (plainObject(value)) {
+    return '{' + Object.keys(value).sort().map((key) => JSON.stringify(key) + ':' + stableJson(value[key])).join(',') + '}';
+  }
+  return JSON.stringify(value);
+}
+
+async function sha256Hex(value) {
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value)));
+  return Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
 
 function secretsConfigured(env) {
   return typeof env.DEVICE_TOKEN === 'string'
@@ -132,8 +152,174 @@ export class NativeRdcConnectionOwner {
     if (url.pathname === '/call' && request.method === 'POST') {
       return this.handleCall(await request.json());
     }
+    if (url.pathname === '/approval/request' && request.method === 'POST') {
+      return this.requestApproval(await request.json());
+    }
+    if (url.pathname === '/approval/get' && request.method === 'GET') {
+      return this.getApproval(url.searchParams.get('id'));
+    }
+    if (url.pathname === '/approval/decide' && request.method === 'POST') {
+      return this.decideApproval(await request.json());
+    }
+    if (url.pathname === '/approval/consume' && request.method === 'POST') {
+      return this.consumeApproval(await request.json());
+    }
+    if (url.pathname === '/approval/finalize' && request.method === 'POST') {
+      return this.finalizeApproval(await request.json());
+    }
 
     return jsonResponse({ code: 'NOT_FOUND' }, 404);
+  }
+
+  async requestApproval(raw) {
+    if (!plainObject(raw)
+      || typeof raw.ownerId !== 'string' || !raw.ownerId.startsWith('cloudflare-access:')
+      || raw.action !== 'create_directory'
+      || !plainObject(raw.arguments)
+      || Object.keys(raw.arguments).length !== 1
+      || typeof raw.arguments.path !== 'string' || !raw.arguments.path.trim()) {
+      return jsonResponse({ code: 'INVALID_APPROVAL_REQUEST' }, 400);
+    }
+    const id = crypto.randomUUID();
+    const nonce = crypto.randomUUID();
+    const createdAt = Date.now();
+    const expiresAt = createdAt + APPROVAL_TTL_MS;
+    const fingerprint = await sha256Hex(stableJson({
+      ownerId: raw.ownerId,
+      action: raw.action,
+      arguments: raw.arguments,
+      nonce,
+    }));
+    const record = {
+      id,
+      ownerId: raw.ownerId,
+      action: raw.action,
+      arguments: { path: raw.arguments.path },
+      fingerprint,
+      state: 'REQUESTED',
+      createdAt,
+      expiresAt,
+      updatedAt: createdAt,
+    };
+    await this.ctx.storage.put(APPROVAL_PREFIX + id, record);
+    return jsonResponse({
+      id,
+      fingerprint,
+      state: record.state,
+      expires_at: new Date(expiresAt).toISOString(),
+      action: record.action,
+      arguments: record.arguments,
+    }, 201);
+  }
+
+  async getApproval(id) {
+    if (typeof id !== 'string' || !id) return jsonResponse({ code: 'INVALID_APPROVAL_ID' }, 400);
+    const record = await this.ctx.storage.get(APPROVAL_PREFIX + id);
+    if (!record) return jsonResponse({ code: 'APPROVAL_NOT_FOUND' }, 404);
+    const state = record.expiresAt <= Date.now() && ['REQUESTED', 'APPROVED'].includes(record.state)
+      ? 'EXPIRED' : record.state;
+    if (state !== record.state) {
+      record.state = state;
+      record.updatedAt = Date.now();
+      await this.ctx.storage.put(APPROVAL_PREFIX + id, record);
+    }
+    return jsonResponse({
+      id: record.id,
+      ownerId: record.ownerId,
+      action: record.action,
+      arguments: record.arguments,
+      fingerprint: record.fingerprint,
+      state,
+      created_at: new Date(record.createdAt).toISOString(),
+      expires_at: new Date(record.expiresAt).toISOString(),
+    });
+  }
+
+  async decideApproval(raw) {
+    if (!plainObject(raw)
+      || typeof raw.ownerId !== 'string'
+      || typeof raw.id !== 'string'
+      || typeof raw.fingerprint !== 'string'
+      || !['approve', 'deny'].includes(raw.decision)) {
+      return jsonResponse({ code: 'INVALID_APPROVAL_DECISION' }, 400);
+    }
+    const key = APPROVAL_PREFIX + raw.id;
+    const record = await this.ctx.storage.get(key);
+    if (!record) return jsonResponse({ code: 'APPROVAL_NOT_FOUND' }, 404);
+    if (record.ownerId !== raw.ownerId || record.fingerprint !== raw.fingerprint) {
+      return jsonResponse({ code: 'APPROVAL_MISMATCH' }, 403);
+    }
+    if (record.expiresAt <= Date.now()) {
+      record.state = 'EXPIRED';
+      record.updatedAt = Date.now();
+      await this.ctx.storage.put(key, record);
+      return jsonResponse({ code: 'APPROVAL_EXPIRED' }, 410);
+    }
+    if (record.state !== 'REQUESTED') {
+      return jsonResponse({ code: 'APPROVAL_NOT_PENDING', state: record.state }, 409);
+    }
+    record.state = raw.decision === 'approve' ? 'APPROVED' : 'DENIED';
+    record.updatedAt = Date.now();
+    await this.ctx.storage.put(key, record);
+    return jsonResponse({ id: record.id, fingerprint: record.fingerprint, state: record.state });
+  }
+
+  async consumeApproval(raw) {
+    if (!plainObject(raw)
+      || typeof raw.ownerId !== 'string'
+      || typeof raw.id !== 'string'
+      || typeof raw.fingerprint !== 'string') {
+      return jsonResponse({ code: 'INVALID_APPROVAL_CONSUME' }, 400);
+    }
+    const key = APPROVAL_PREFIX + raw.id;
+    const record = await this.ctx.storage.get(key);
+    if (!record) return jsonResponse({ code: 'APPROVAL_NOT_FOUND' }, 404);
+    if (record.ownerId !== raw.ownerId || record.fingerprint !== raw.fingerprint) {
+      return jsonResponse({ code: 'APPROVAL_MISMATCH' }, 403);
+    }
+    if (record.expiresAt <= Date.now()) {
+      if (record.state === 'REQUESTED' || record.state === 'APPROVED') {
+        record.state = 'EXPIRED';
+        record.updatedAt = Date.now();
+        await this.ctx.storage.put(key, record);
+      }
+      return jsonResponse({ code: 'APPROVAL_EXPIRED', state: record.state }, 410);
+    }
+    if (record.state !== 'APPROVED') {
+      return jsonResponse({ code: 'APPROVAL_NOT_EXECUTABLE', state: record.state }, 409);
+    }
+    record.state = 'DISPATCHED';
+    record.operationId = 'approval-' + record.id;
+    record.dispatchedAt = Date.now();
+    record.updatedAt = record.dispatchedAt;
+    await this.ctx.storage.put(key, record);
+    return jsonResponse({
+      id: record.id,
+      fingerprint: record.fingerprint,
+      state: record.state,
+      operation_id: record.operationId,
+      action: record.action,
+      arguments: record.arguments,
+    });
+  }
+
+  async finalizeApproval(raw) {
+    if (!plainObject(raw)
+      || typeof raw.id !== 'string'
+      || !['COMPLETED', 'FAILED', 'UNKNOWN'].includes(raw.state)) {
+      return jsonResponse({ code: 'INVALID_APPROVAL_FINALIZE' }, 400);
+    }
+    const key = APPROVAL_PREFIX + raw.id;
+    const record = await this.ctx.storage.get(key);
+    if (!record) return jsonResponse({ code: 'APPROVAL_NOT_FOUND' }, 404);
+    if (!['DISPATCHED', 'UNKNOWN'].includes(record.state)) {
+      return jsonResponse({ code: 'APPROVAL_NOT_DISPATCHED', state: record.state }, 409);
+    }
+    record.state = raw.state;
+    record.updatedAt = Date.now();
+    record.completedAt = raw.state === 'COMPLETED' || raw.state === 'FAILED' ? Date.now() : null;
+    await this.ctx.storage.put(key, record);
+    return jsonResponse({ id: record.id, state: record.state, operation_id: record.operationId });
   }
 
   currentDeviceSocket(connectionId) {
@@ -253,7 +439,7 @@ export class NativeRdcConnectionOwner {
 
     if (message.type === 'TOOL_LIST') {
       const names = message.tools.map((tool) => tool?.name).filter(Boolean);
-      const allowed = new Set(ALLOWED_TOOLS);
+      const allowed = new Set(DEVICE_ALLOWED_TOOLS);
       const unique = new Set(names);
       if (!names.includes(ALLOWED_TOOL)
         || names.length !== unique.size

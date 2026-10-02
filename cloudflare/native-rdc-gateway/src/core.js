@@ -10,6 +10,7 @@ export const ALLOWED_TOOLS = Object.freeze([
   'get_file_info',
   'read_file',
 ]);
+export const DEVICE_ALLOWED_TOOLS = Object.freeze([...ALLOWED_TOOLS, 'create_directory']);
 const ALLOWED_TOOL_SET = new Set(ALLOWED_TOOLS);
 
 export function jsonResponse(body, status = 200, headers = {}) {
