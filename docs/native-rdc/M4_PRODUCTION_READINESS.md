@@ -25,9 +25,9 @@ The npm development equivalent is `npm run native-rdc:lifecycle -- <command>`.
 
 The Windows task is named `Native RDC Device`.
 
-It runs at the current user's logon, with limited privileges, starts the compiled Windows supervisor hidden, and contains no device credential in its command line.
+It runs at the current user's logon with limited privileges and launches the compiled Node watchdog directly, with no device credential in its command line.
 
-The supervisor loads the machine credential from the CurrentUser DPAPI-protected store and enforces a single active supervisor instance.
+The watchdog supervises the compiled Windows supervisor and restarts it with bounded backoff after an unexpected child exit. The supervisor loads the machine credential from the CurrentUser DPAPI-protected store and enforces a single active supervisor instance.
 
 `native-rdc install` fails closed unless the compiled supervisor exists and the CurrentUser DPAPI-protected machine credential is readable. A missing credential therefore cannot leave behind a broken autostart task.
 
@@ -55,7 +55,7 @@ The new token is DPAPI-protected locally and streamed to Wrangler over stdin. It
 
 If the Cloudflare secret update fails, the previous local protected credential is restored.
 
-The task is restarted only after the server-side secret update succeeds.
+After the server-side update, rotation probes the superseded credential over a new WebSocket handshake until Cloudflare rejects it within a bounded verification window. If rejection cannot be proven, the Cloudflare secret and local DPAPI credential are rolled back. The task is restarted only after old-credential rejection is proven.
 
 Wrangler discovery can be supplied with `NATIVE_RDC_WRANGLER_PATH` when Wrangler is not installed in this repository.
 
@@ -158,7 +158,7 @@ Validated on Windows against branch `native-rdc/m4-production-readiness`:
 - M3B: 8 passed, 0 failed.
 - M3C: 10 passed, 0 failed.
 - M3D: 11 passed, 0 failed.
-- M4: 10 passed, 0 failed.
+- M4: 11 passed, 0 failed.
 - Full project suite: 75 test modules passed, 0 failed.
 - Local Native RDC end-to-end smoke: PASS.
 - Windows/network boundary check: no Native RDC listening socket and no matching firewall rule.
@@ -166,39 +166,36 @@ Validated on Windows against branch `native-rdc/m4-production-readiness`:
 
 The repository-wide production dependency audit is not clean: 27 findings remain (9 moderate, 16 high, 2 critical). The critical chains are under the existing PDF conversion stack (`@opendocsg/pdf2md`/canvas � tar and `md-to-pdf`/Puppeteer � basic-ftp), and no reference to those packages exists in the Native RDC source paths. They are retained as parent-project dependency debt rather than force-upgraded in the Native RDC transport milestone.
 
-## Live activation state  2 October 2026
+## Live activation state — 2 October 2026
 
-M4 code completion is proven, but the machine is intentionally not activated as a replacement yet.
+The M4 Worker is deployed at `https://native-rdc-gateway.elliot-mercer-uk.workers.dev`. The owner identifier is stored as a Worker secret rather than committed configuration.
 
-Current `native-rdc doctor` state:
+The Windows runtime is now activated in parallel with official RDC:
 
-- Windows runtime: PASS.
-- Compiled supervisor: PASS.
-- Protected machine credential: FAIL  not provisioned.
-- Supervisor health: FAIL  service not installed/running.
-- Scheduled task: FAIL  `Native RDC Device` is not registered.
-- Network exposure: PASS  0 Native RDC listeners and 0 matching firewall rules.
-- Gateway health: FAIL  no protected gateway origin is configured.
+- CurrentUser DPAPI-protected machine credential: PASS.
+- Explicit read roots: 2.
+- Explicit write roots: 1 dedicated Native RDC workspace.
+- `Native RDC Device` scheduled task: INSTALLED.
+- Scheduled task launches the Node watchdog directly with no credential in its command line.
+- Watchdog → supervisor → outbound WebSocket: ONLINE.
+- Forced supervisor-child crash recovery: PASS; watchdog created a replacement child and health returned to ONLINE.
+- Native RDC listening sockets: 0.
+- Matching Native RDC firewall rules: 0.
+- Gateway health: PASS.
+- Real DEVICE_TOKEN rotation: PASS; superseded credential rejection is required before restart and no token is printed.
+- Official Desktop Commander Remote remains online and independent as fallback.
 
-The existing Cloudflare Worker `native-rdc-gateway` remains deployed as the older gateway implementation. It does not contain the M3C/M3D/M4 capability markers from this branch, so the validated M4 Worker has not replaced the existing deployment.
-
-Official Desktop Commander Remote remains online and independent as the fallback control path.
-
-The remaining activation inputs were not previously established: the exact Cloudflare Access owner identity/policy, the protected gateway URL/device credential, and explicit Native RDC read/write roots. Official RDC currently permits unrestricted filesystem scope, but Native RDC must not silently inherit that unrestricted setting.
+A live `native-rdc doctor` run reports PASS for Windows runtime, compiled supervisor, protected credential, supervisor health, scheduled-task registration, network exposure and gateway health.
 
 ## Remaining replacement-readiness proof
 
-After the explicit owner/root inputs are established:
+The remaining external gate is the production Cloudflare Access policy for the single owner. The Worker application already requires `ctx.access` on human authorization/approval routes and fails closed without it, but the account-level Access application/policy must still be activated through Cloudflare's Access management surface.
 
-1. verify or create the intended single-owner Cloudflare Access policy;
-2. deploy the committed M4 Worker;
-3. bootstrap the CurrentUser DPAPI-protected credential using the deployed gateway URL, `native-rdc-windows-1`, a new machine token, and explicit bounded read/write roots;
-4. install and start `Native RDC Device`;
-5. run `native-rdc doctor` to a clean operational state;
-6. prove real DEVICE_TOKEN rotation;
-7. prove reconnect/redeploy recovery;
-8. prove all five deployed read tools;
-9. prove one approval-gated directory creation, then prove replay is refused;
-10. keep official RDC online while performing a controlled reboot-persistence proof.
+After that policy is active, complete these final live proofs:
 
-Until those live gates are complete, replacement status is `NOT YET REPLACEMENT-READY`.
+1. authenticate the intended owner through Cloudflare Access;
+2. exercise all five deployed MCP read tools through OAuth;
+3. request and approve one directory creation through the Access-protected approval page, execute it once, and prove replay is refused;
+4. perform the controlled Windows reboot-persistence proof when it is safe to risk the remote control path.
+
+Until those external/live interaction gates are complete, engineering is operational but replacement status remains `NOT YET REPLACEMENT-READY`.

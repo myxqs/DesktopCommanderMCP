@@ -7,9 +7,10 @@ $ErrorActionPreference = 'Stop'
 $TaskName = 'Native RDC Device'
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $Supervisor = Join-Path $RepoRoot 'dist\native-remote\windows-supervisor.js'
+$Watchdog = Join-Path $RepoRoot 'dist\native-remote\windows-watchdog.js'
 
 function Assert-Built {
-  if (-not (Test-Path $Supervisor)) { throw "Native RDC is not built. Run npm run build first." }
+  if (-not (Test-Path $Supervisor) -or -not (Test-Path $Watchdog)) { throw "Native RDC is not built. Run npm run build first." }
 }
 
 function Get-NativeTask {
@@ -20,13 +21,12 @@ function Install-NativeTask {
   Assert-Built
   $node = (Get-Command node.exe -ErrorAction Stop).Source
   $user = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-  $command = '& "' + $node + '" "' + $Supervisor + '"'
-  $argument = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -Command "' + $command.Replace('"','\"') + '"'
-  $taskAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $argument
+  $argument = '"' + $Watchdog + '"'
+  $taskAction = New-ScheduledTaskAction -Execute $node -Argument $argument -WorkingDirectory $RepoRoot
   $trigger = New-ScheduledTaskTrigger -AtLogOn -User $user
   $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
   $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
-  Register-ScheduledTask -TaskName $TaskName -Action $taskAction -Trigger $trigger -Principal $principal -Settings $settings -Description 'Self-hosted Native RDC outbound device supervisor. Contains no credentials.' -Force | Out-Null
+  Register-ScheduledTask -TaskName $TaskName -Action $taskAction -Trigger $trigger -Principal $principal -Settings $settings -Description 'Self-hosted Native RDC watchdog for the outbound device supervisor. Contains no credentials.' -Force | Out-Null
   Write-Output 'Native RDC scheduled task installed.'
 }
 

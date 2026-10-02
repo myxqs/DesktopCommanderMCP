@@ -36,12 +36,22 @@ test('package exposes stable native-rdc lifecycle CLI', async () => {
   assert.match(pkg.scripts['native-rdc:lifecycle'], /lifecycle\.js/);
 });
 
+test('scheduled task supervises node directly without a PowerShell wrapper', async () => {
+  const source = await fs.readFile(new URL('../scripts/native-rdc-windows.ps1', import.meta.url), 'utf8');
+  assert.match(source, /New-ScheduledTaskAction -Execute \$node/);
+  assert.match(source, /windows-watchdog\.js/);
+  assert.match(source, /-WorkingDirectory \$RepoRoot/);
+  assert.equal(/New-ScheduledTaskAction -Execute 'powershell\.exe'/.test(source), false);
+});
+
 test('lifecycle source does not embed machine tokens in command arguments', async () => {
   const source = await fs.readFile(new URL('../src/native-remote/lifecycle.ts', import.meta.url), 'utf8');
   assert.equal(/--token|Bearer\s+\$?\w+|DEVICE_TOKEN=.*deviceToken/.test(source), false);
-  assert.match(source, /input:\s*nextToken\s*\+\s*['"]\\n/);
+  assert.match(source, /input:\s*value\s*\+\s*['"]\\n/);
   assert.match(source, /test-native-rdc-m3d\.js/);
   assert.match(source, /test-native-rdc-m4\.js/);
+  assert.match(source, /oldCredentialRejected:\s*true/);
+  assert.match(source, /waitForDeviceCredentialRejection\(current\.gatewayUrl, current\.deviceId, current\.deviceToken\)/);
 });
 
 test('safe lifecycle status never contains protected device token', async () => {

@@ -1,5 +1,6 @@
 import { open, readFile, unlink, mkdir } from 'node:fs/promises';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { CloudflareDeviceClient } from './cloudflare-device-client.js';
 import {
   defaultNativeRdcStateDirectory,
@@ -193,7 +194,7 @@ export async function main(): Promise<void> {
   await runWindowsSupervisor(controller.signal);
 }
 
-if (import.meta.url === new URL(process.argv[1] || '', 'file:///').href) {
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch((error) => {
     console.error('Native RDC supervisor failed:', error instanceof Error ? error.message : 'unknown error');
     process.exitCode = 1;

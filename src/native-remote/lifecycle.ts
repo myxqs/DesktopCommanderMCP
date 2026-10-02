@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { access, readFile, writeFile, mkdir } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
+import WebSocket from 'ws';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -206,22 +207,113 @@ function resolveWrangler(): string {
   return existsSync(local) ? local : executable;
 }
 
+function putWorkerSecret(secretName: string, value: string) {
+  const wrangler = resolveWrangler();
+  const cwd = path.join(REPO_ROOT, 'cloudflare', 'native-rdc-gateway');
+  if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(wrangler)) {
+    const commandLine = '"' + wrangler + '" secret put ' + secretName + ' --name native-rdc-gateway';
+    return spawnSync(commandLine, {
+      cwd,
+      input: value + '\n',
+      encoding: 'utf8',
+      windowsHide: true,
+      shell: true,
+    });
+  }
+  return run(wrangler, ['secret', 'put', secretName, '--name', 'native-rdc-gateway'], {
+    cwd,
+    input: value + '\n',
+  });
+}
+
+async function deviceCredentialAccepted(gatewayUrl: string, deviceId: string, token: string): Promise<boolean> {
+  const url = new URL('/v1/device/connect', gatewayUrl);
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  url.searchParams.set('device_id', deviceId);
+  return new Promise<boolean>((resolve, reject) => {
+    let settled = false;
+    const finish = (value: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const fail = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(error);
+    };
+    const socket = new WebSocket(url, {
+      headers: { Authorization: 'Bearer ' + token },
+      handshakeTimeout: 7000,
+      maxPayload: 4096,
+    });
+    const timer = setTimeout(() => {
+      try { socket.terminate(); } catch {}
+      fail(new Error('Device credential rejection probe timed out'));
+    }, 8000);
+    socket.once('open', () => {
+      try { socket.terminate(); } catch {}
+      finish(true);
+    });
+    socket.once('unexpected-response', (_request, response) => {
+      const status = response.statusCode ?? 0;
+      response.resume();
+      try { socket.terminate(); } catch {}
+      if (status === 401 || status === 403) finish(false);
+      else fail(new Error('Device credential rejection probe returned HTTP ' + status));
+    });
+    socket.once('error', (error) => {
+      try { socket.terminate(); } catch {}
+      if (!settled) fail(error instanceof Error ? error : new Error(String(error)));
+    });
+  });
+}
+
+async function waitForDeviceCredentialRejection(
+  gatewayUrl: string,
+  deviceId: string,
+  oldToken: string,
+): Promise<boolean> {
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    if (!await deviceCredentialAccepted(gatewayUrl, deviceId, oldToken)) return true;
+    await new Promise((resolve) => setTimeout(resolve, 750));
+  }
+  return false;
+}
+
 export async function rotateDeviceCredential(): Promise<void> {
   const current = await loadProtectedMachineCredential();
   const nextToken = randomBytes(32).toString('base64url');
   const next = { ...current, deviceToken: nextToken };
   await saveProtectedMachineCredential(next);
-  const wrangler = resolveWrangler();
-  const result = run(wrangler, ['secret', 'put', 'DEVICE_TOKEN', '--name', 'native-rdc-gateway'], {
-    cwd: path.join(REPO_ROOT, 'cloudflare', 'native-rdc-gateway'),
-    input: nextToken + '\n',
-  });
+  const result = putWorkerSecret('DEVICE_TOKEN', nextToken);
   if (result.status !== 0) {
     await saveProtectedMachineCredential(current);
     throw new Error('Cloudflare credential rotation failed; local protected credential restored');
   }
+
+  try {
+    if (!await waitForDeviceCredentialRejection(current.gatewayUrl, current.deviceId, current.deviceToken)) {
+      throw new Error('Superseded device credential remained accepted beyond the verification window');
+    }
+  } catch (error) {
+    const rollback = putWorkerSecret('DEVICE_TOKEN', current.deviceToken);
+    await saveProtectedMachineCredential(current);
+    if (rollback.status !== 0) {
+      throw new Error('Credential rejection proof failed and Cloudflare rollback also failed; manual recovery required');
+    }
+    throw new Error('Credential rotation verification failed; previous credential restored: ' + safeDetail(error instanceof Error ? error.message : error));
+  }
+
   runWindowsAction('Restart');
-  console.log(JSON.stringify({ rotated: true, secret: 'DEVICE_TOKEN', tokenPrinted: false }));
+  console.log(JSON.stringify({
+    rotated: true,
+    secret: 'DEVICE_TOKEN',
+    oldCredentialRejected: true,
+    tokenPrinted: false,
+  }));
 }
 export async function lifecycleMain(argv = process.argv.slice(2)): Promise<void> {
   const command = (argv[0] || 'status').toLowerCase();
