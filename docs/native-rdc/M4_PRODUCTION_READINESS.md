@@ -199,3 +199,19 @@ After that policy is active, complete these final live proofs:
 4. perform the controlled Windows reboot-persistence proof when it is safe to risk the remote control path.
 
 Until those external/live interaction gates are complete, engineering is operational but replacement status remains `NOT YET REPLACEMENT-READY`.
+
+## Shipping gate checkpoint — 2 October 2026
+
+The engineering/runtime release candidate is prepared at commit `1dfd4bb8f3d0537dbe740290ca172bf957e7981a` and is pushed to `origin/native-rdc/m4-production-readiness`. The worktree was clean and synchronized with the remote at this checkpoint.
+
+Cloudflare Zero Trust onboarding has been opened in the intended Cloudflare account and the **Zero Trust Free ($0/seat/month)** plan was selected. Cloudflare then presented its account activation checkout and requires a payment method even though the order summary is $0/month. No payment method was entered or selected by automation, and no paid plan or trial was authorized.
+
+This is the current human-only shipping gate. After the account holder completes the $0 Zero Trust activation, continue without repeating completed engineering or validation:
+
+1. create the Cloudflare Access application/policy for the deployed Native RDC gateway and restrict it to the configured single owner;
+2. authenticate that owner and complete the live OAuth proof for all five read tools;
+3. complete the Access-protected approval-gated directory-creation proof and verify replay refusal;
+4. run `native-rdc doctor` again and require all PASS;
+5. perform the controlled reboot-persistence proof only when the official RDC fallback is independently available and it is safe to reboot.
+
+Do not merge to `main`, tag a release, or disable official RDC until every remaining live gate passes.
