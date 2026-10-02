@@ -180,6 +180,9 @@ export class NativeRdcConnectionOwner {
       || typeof raw.arguments.path !== 'string' || !raw.arguments.path.trim()) {
       return jsonResponse({ code: 'INVALID_APPROVAL_REQUEST' }, 400);
     }
+    if (!(await this.ensureStorageCapacity(APPROVAL_PREFIX, 256))) {
+      return jsonResponse({ code: 'APPROVAL_CAPACITY_EXHAUSTED' }, 503);
+    }
     const id = crypto.randomUUID();
     const nonce = crypto.randomUUID();
     const createdAt = Date.now();
@@ -319,7 +322,38 @@ export class NativeRdcConnectionOwner {
     record.updatedAt = Date.now();
     record.completedAt = raw.state === 'COMPLETED' || raw.state === 'FAILED' ? Date.now() : null;
     await this.ctx.storage.put(key, record);
+    await this.prunePrefix(APPROVAL_PREFIX, 256);
     return jsonResponse({ id: record.id, state: record.state, operation_id: record.operationId });
+  }
+
+  async prunePrefix(prefix, maxRecords) {
+    if (typeof this.ctx.storage.list !== 'function' || typeof this.ctx.storage.delete !== 'function') return;
+    const records = await this.ctx.storage.list({ prefix });
+    if (!records || records.size <= maxRecords) return;
+    const now = Date.now();
+    const removable = [...records.entries()].filter(([, record]) => {
+      if (prefix === APPROVAL_PREFIX) {
+        const state = record?.state;
+        const expired = Number(record?.expiresAt ?? Number.POSITIVE_INFINITY) <= now
+          && ['REQUESTED', 'APPROVED'].includes(state);
+        return expired || ['DENIED', 'EXPIRED', 'COMPLETED', 'FAILED'].includes(state);
+      }
+      if (prefix === CALL_PREFIX) return record?.state === 'terminal';
+      return false;
+    }).sort((left, right) => {
+      const a = Number(left[1]?.updatedAt ?? left[1]?.createdAt ?? 0);
+      const b = Number(right[1]?.updatedAt ?? right[1]?.createdAt ?? 0);
+      return a - b;
+    });
+    const remove = removable.slice(0, Math.max(0, records.size - maxRecords));
+    for (const [key] of remove) await this.ctx.storage.delete(key);
+  }
+
+  async ensureStorageCapacity(prefix, maxRecords) {
+    if (typeof this.ctx.storage.list !== 'function' || typeof this.ctx.storage.delete !== 'function') return true;
+    await this.prunePrefix(prefix, Math.max(0, maxRecords - 1));
+    const records = await this.ctx.storage.list({ prefix });
+    return !records || records.size < maxRecords;
   }
 
   currentDeviceSocket(connectionId) {
@@ -373,6 +407,9 @@ export class NativeRdcConnectionOwner {
     const wire = JSON.stringify(call);
     if (utf8Size(wire) > MAX_DEVICE_MESSAGE_BYTES) {
       return jsonResponse({ code: 'CALL_TOO_LARGE' }, 413);
+    }
+    if (!(await this.ensureStorageCapacity(CALL_PREFIX, 512))) {
+      return jsonResponse({ code: 'CALL_CAPACITY_EXHAUSTED' }, 503);
     }
     await this.ctx.storage.put(key, {
       state: 'pending',
@@ -483,6 +520,7 @@ export class NativeRdcConnectionOwner {
           terminal: message,
           updatedAt: Date.now(),
         });
+        await this.prunePrefix(CALL_PREFIX, 512);
       }
       const waiter = this.waiters.get(message.call_id);
       if (waiter) {

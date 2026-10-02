@@ -17,6 +17,7 @@
   },
   "bin": {
     "desktop-commander": "dist/index.js",
+    "native-rdc": "dist/native-remote/lifecycle.js",
     "setup": "dist/setup-claude-server.js",
     "remove": "dist/uninstall-claude-server.js"
   },
@@ -78,6 +79,8 @@
     "native-rdc:m3b:test": "node test/test-native-rdc-m3b.js",
     "native-rdc:m3c:test": "npm run build && node test/test-native-rdc-m3c.js",
     "native-rdc:m3d:test": "npm run build && node test/test-native-rdc-m3d.js",
+    "native-rdc:m4:test": "npm run build && node test/test-native-rdc-m4.js",
+    "native-rdc:lifecycle": "npm run build && node dist/native-remote/lifecycle.js",
     "native-rdc:m3a:supervisor": "npm run build && node dist/native-remote/windows-supervisor.js",
     "native-rdc:m3a:credential:status": "npm run build && node dist/native-remote/windows-credential-cli.js status",
     "native-rdc:m3a:credential:store": "npm run build && node dist/native-remote/windows-credential-cli.js store",
@@ -107,7 +110,7 @@
   ],
   "dependencies": {
     "@cloudflare/workers-oauth-provider": "^1.2.1",
-    "@modelcontextprotocol/sdk": "^1.9.0",
+    "@modelcontextprotocol/sdk": "^1.31.0",
     "@opendocsg/pdf2md": "^0.2.2",
     "@supabase/supabase-js": "^2.89.0",
     "@tiptap/core": "^3.22.3",
@@ -139,7 +142,7 @@
     "tiptap-markdown": "^0.9.0",
     "unified": "^11.0.5",
     "unpdf": "^1.4.0",
-    "ws": "8.18.3",
+    "ws": "^8.22.0",
     "zod": "^3.24.1",
     "zod-to-json-schema": "^3.23.5"
   },
