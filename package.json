@@ -75,6 +75,7 @@
     "native-rdc:m2:test": "node test/test-native-rdc-m2.js",
     "native-rdc:m2:remote-proof": "node scripts/native-rdc-m2-remote-proof.js",
     "native-rdc:m3a:test": "npm run build && node test/test-native-rdc-m3a.js",
+    "native-rdc:m3b:test": "node test/test-native-rdc-m3b.js",
     "native-rdc:m3a:supervisor": "npm run build && node dist/native-remote/windows-supervisor.js",
     "native-rdc:m3a:credential:status": "npm run build && node dist/native-remote/windows-credential-cli.js status",
     "native-rdc:m3a:credential:store": "npm run build && node dist/native-remote/windows-credential-cli.js store",

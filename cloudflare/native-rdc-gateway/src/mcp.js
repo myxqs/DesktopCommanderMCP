@@ -6,6 +6,11 @@ import {
   ListToolsRequestSchema,
   McpError,
 } from '@modelcontextprotocol/sdk/types.js';
+import {
+  DEFAULT_POLICY_REGISTRY,
+  GET_CONFIG_POLICY,
+  getPolicy,
+} from './policy.js';
 
 export const MCP_ORIGIN = 'https://native-rdc-gateway.elliot-mercer-uk.workers.dev';
 export const MCP_RESOURCE = MCP_ORIGIN + '/mcp';
@@ -13,12 +18,6 @@ export const MCP_SCOPE = 'native-rdc:read';
 export const MCP_TOOL_NAME = 'get_config';
 export const MAX_MCP_REQUEST_BYTES = 64 * 1024;
 export const MAX_MCP_RESULT_BYTES = 32 * 1024;
-
-const inputSchema = {
-  type: 'object',
-  properties: {},
-  additionalProperties: false,
-};
 
 const outputSchema = {
   type: 'object',
@@ -51,21 +50,16 @@ const outputSchema = {
   additionalProperties: false,
 };
 
-export const GET_CONFIG_TOOL = {
-  name: MCP_TOOL_NAME,
-  title: 'Get Desktop Commander configuration',
-  description: 'Use this when the user wants to inspect the current read-only Desktop Commander configuration and safety limits on their trusted Windows device.',
-  inputSchema,
-  outputSchema,
-  annotations: {
-    readOnlyHint: true,
-    destructiveHint: false,
-    openWorldHint: false,
-  },
-  securitySchemes: [
-    { type: 'oauth2', scopes: [MCP_SCOPE] },
-  ],
-};
+function descriptorForPolicy(policy) {
+  const descriptor = {
+    ...policy.descriptor,
+    securitySchemes: [{ type: 'oauth2', scopes: [MCP_SCOPE] }],
+  };
+  if (policy.externalName === MCP_TOOL_NAME) descriptor.outputSchema = outputSchema;
+  return descriptor;
+}
+
+export const GET_CONFIG_TOOL = Object.freeze(descriptorForPolicy(GET_CONFIG_POLICY));
 
 function safeScalar(value, type) {
   return typeof value === type ? value : null;
@@ -159,12 +153,19 @@ export function createMcpApiHandler({ invokeGetConfig, resourceMetadataUrl }) {
       );
 
       server.setRequestHandler(ListToolsRequestSchema, async () => ({
-        tools: [GET_CONFIG_TOOL],
+        tools: Object.values(DEFAULT_POLICY_REGISTRY).map(descriptorForPolicy),
       }));
 
       server.setRequestHandler(CallToolRequestSchema, async (message) => {
-        if (message.params.name !== MCP_TOOL_NAME) {
+        const policy = getPolicy(message.params.name);
+        if (!policy) {
           throw new McpError(ErrorCode.InvalidParams, 'Unknown or disallowed tool');
+        }
+        if (policy.approvalRequired) {
+          throw new McpError(ErrorCode.InvalidParams, 'Tool requires an approval flow that is not available in this milestone');
+        }
+        if (policy.invokeKey !== 'getConfig' || policy.sanitizerKey !== 'getConfig') {
+          throw new McpError(ErrorCode.InvalidParams, 'Tool policy adapter is not implemented');
         }
         const args = message.params.arguments ?? {};
         if (!args || typeof args !== 'object' || Array.isArray(args) || Object.keys(args).length !== 0) {
